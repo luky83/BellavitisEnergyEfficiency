@@ -22,8 +22,15 @@ uint8_t window1 = 0;
 
 PacketSerial myPacketSerial;
 SoftwareSerial mySerial(10, 11); // RX, TX
-uint8_t myPacket[10];
+uint8_t myPacket[14];
 bool ok_to_send = false; // semaphore to prevent sending data after resetting average
+
+
+SoftwareSerial sensor(8, 9);      // TX, RX
+const unsigned char cmd_get_sensor[] = {0xff, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
+byte data[9];
+int CO2_temperature = -300;
+int CO2PPM = -1;
 
 unsigned long lastRead = 0;        // will store last time data was sent
 const long readInterval = 1000;           // interval at which to send data
@@ -34,6 +41,7 @@ const long sendInterval = 10000;           // interval at which to send data
 void setup() {
   Serial.begin(9600);
   mySerial.begin(38400);
+  sensor.begin(9600);
   myPacketSerial.setStream(&mySerial);
 
   while (!Serial);
@@ -58,7 +66,8 @@ void loop() {
     lastRead = currentMillis;
     readAirQuality();
     readDHT22();
-    readWindows();
+    readCO2Sensor();
+    readReelSwitch();
     printDebugInfo();
     ok_to_send = true;
   }
@@ -67,15 +76,16 @@ void loop() {
   if (currentMillis - lastSent >= sendInterval && ok_to_send) {
     lastSent = currentMillis;
     memcpy (&myPacket[0], (uint8_t*)&temperature_avg, 4);
-    memcpy (&myPacket[4], (uint8_t*)&humidity_avg, 4);
-    memcpy (&myPacket[8], (uint8_t*)&current_quality, 1);
-    memcpy (&myPacket[9], (uint8_t*)&window1, 1);
+    memcpy (&myPacket[4], (uint8_t*)&CO2_temperature, 2);
+    memcpy (&myPacket[6], (uint8_t*)&humidity_avg, 4);
+    memcpy (&myPacket[10], (uint8_t*)&current_quality, 1);
+    memcpy (&myPacket[11], (uint8_t*)&CO2PPM, 2);
+    memcpy (&myPacket[13], (uint8_t*)&window1, 1);
     // Send the packet.
-    myPacketSerial.send(myPacket, 10);
+    myPacketSerial.send(myPacket, 14);
     resetAverage();
     ok_to_send = false;
   }
-
 }
 
 void runAverage() {
@@ -106,8 +116,40 @@ void readDHT22() {
   runAverage();
 }
 
-void readWindows() {
+void readCO2Sensor() {
+  // send CO2 request packet
+  for (int i = 0; i < sizeof(cmd_get_sensor); i++) {
+    sensor.write(cmd_get_sensor[i]);
+  }
+  delay(100);
+  // read CO2 request response
+  if (sensor.available() == 9) {
+    for (int i = 0; i < 9; i++) {
+      data[i] = sensor.read();
+    }
+  } else { // discard serial data
+    Serial.println("CO2 packet incomplete, discarding buffer");
+    while (sensor.available()) {
+      sensor.read();
+      delay(100);
+    }
+  }
+  if ( CO2_sensor_checksum_ok()) {
+    CO2PPM = (int)data[2] * 256 + (int)data[3];
+    CO2_temperature = (int)data[4] - 40;
+  } else {
+    Serial.println("CO2 packet checksum fail, discarding packet");
+    CO2PPM = -1;
+    CO2_temperature = -300;
+  }
+}
+
+void readReelSwitch() {
   window1 = digitalRead(window1_pin);
+}
+
+bool CO2_sensor_checksum_ok() {
+  return (1 + (0xFF ^ (byte)(data[1] + data[2] + data[3] + data[4] + data[5] + data[6] + data[7]))) == data[8];
 }
 
 void printDebugInfo() {
@@ -128,9 +170,17 @@ void printDebugInfo() {
     else if (current_quality == AirQualitySensor::FRESH_AIR)
       Serial.println("Fresh air");
   } else {
-   Serial.println("Air Quality sensor returned no valid data");
+    Serial.println("Air Quality sensor returned no valid data");
   }
-  Serial.print("Finestra1: ");
-  if(window1) Serial.println("aperta");
+
+  Serial.print("CO2 sensor Temperature: ");
+  Serial.print(CO2_temperature);
+  Serial.print("  CO2: ");
+  Serial.print(CO2PPM);
+  Serial.println("");
+
+
+  Serial.print("Finestra 1: ");
+  if (window1) Serial.println("aperta");
   else Serial.println("chiusa");
 }
