@@ -11,7 +11,8 @@ float temperature = 0;
 float humidity = 0;
 float temperature_avg = 0;
 float humidity_avg = 0;
-int readings = 1;
+int readings = 0;
+int DHTerr = SimpleDHTErrSuccess;
 
 AirQualitySensor airqualitysensor(A0);
 int8_t current_quality = -1;
@@ -26,22 +27,23 @@ uint8_t myPacket[14];
 bool ok_to_send = false; // semaphore to prevent sending data after resetting average
 
 
-SoftwareSerial sensor(8, 9);      // TX, RX
+SoftwareSerial co2_sensor(8, 9);      // TX, RX
 const unsigned char cmd_get_sensor[] = {0xff, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
 byte data[9];
-int CO2_temperature = -300;
-int CO2PPM = -1;
+int CO2_temperature = 0;
+int CO2PPM = 0;
 
-unsigned long lastRead = 0;        // will store last time data was sent
 const long readInterval = 1000;           // interval at which to send data
-unsigned long lastSent = 0;        // will store last time data was sent
 const long sendInterval = 10000;           // interval at which to send data
+unsigned long lastRead = 0;        // will store last time data was sent
+unsigned long lastSent = 0;        // will store last time data was sent
 
+void(* Reset)(void) = 0;
 
 void setup() {
   Serial.begin(9600);
   mySerial.begin(38400);
-  sensor.begin(9600);
+  co2_sensor.begin(9600);
   myPacketSerial.setStream(&mySerial);
 
   while (!Serial);
@@ -60,8 +62,8 @@ void setup() {
 unsigned long currentMillis;
 void loop() {
   myPacketSerial.update();
-
   currentMillis = millis();
+  
   if (currentMillis - lastRead >= readInterval) {
     lastRead = currentMillis;
     readAirQuality();
@@ -72,7 +74,6 @@ void loop() {
     ok_to_send = true;
   }
 
-  currentMillis = millis();
   if (currentMillis - lastSent >= sendInterval && ok_to_send) {
     lastSent = currentMillis;
     memcpy (&myPacket[0], (uint8_t*)&temperature_avg, 4);
@@ -89,15 +90,15 @@ void loop() {
 }
 
 void runAverage() {
+  readings++;
   temperature_avg += (temperature - temperature_avg) / readings;
   humidity_avg += (humidity - humidity_avg) / readings;
-  readings++;
 }
 
 void resetAverage() {
-  float temperature_avg = 0;
-  float humidity_avg = 0;
-  int readings = 1;
+  temperature_avg = 0;
+  humidity_avg = 0;
+  readings = 0;
 }
 
 void readAirQuality() {
@@ -108,10 +109,10 @@ void readDHT22() {
   // read without samples.
   // @remark We use read2 to get a float data, such as 10.1*C
   //    if user doesn't care about the accurate data, use read to get a byte data, such as 10*C.
-  int err = SimpleDHTErrSuccess;
-  if ((err = dht22.read2(pinDHT22, &temperature, &humidity, NULL)) != SimpleDHTErrSuccess) {
-    Serial.print("Read DHT22 failed, err="); Serial.println(err); delay(2000);
-    return;
+  DHTerr = SimpleDHTErrSuccess;
+  if ((DHTerr = dht22.read2(pinDHT22, &temperature, &humidity, NULL)) != SimpleDHTErrSuccess) {
+    Serial.print("Read DHT22 failed, err="); Serial.println(DHTerr); delay(2000);
+    Reset(); // reboot Arduino
   }
   runAverage();
 }
@@ -119,18 +120,18 @@ void readDHT22() {
 void readCO2Sensor() {
   // send CO2 request packet
   for (int i = 0; i < sizeof(cmd_get_sensor); i++) {
-    sensor.write(cmd_get_sensor[i]);
+    co2_sensor.write(cmd_get_sensor[i]);
   }
   delay(100);
   // read CO2 request response
-  if (sensor.available() == 9) {
+  if (co2_sensor.available() == 9) {
     for (int i = 0; i < 9; i++) {
-      data[i] = sensor.read();
+      data[i] = co2_sensor.read();
     }
   } else { // discard serial data
     Serial.println("CO2 packet incomplete, discarding buffer");
-    while (sensor.available()) {
-      sensor.read();
+    while (co2_sensor.available()) {
+      co2_sensor.read();
       delay(100);
     }
   }
